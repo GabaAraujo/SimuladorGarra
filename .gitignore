@@ -57,3 +57,4 @@ datasets/odontologia-*/manifest.json
 runs/
 artifacts/vision_*/
 artifacts/vision_*.png
+artifacts/nl_log.jsonl

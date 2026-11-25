@@ -26,8 +26,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Endereço IP de escuta do servidor (padrão: 0.0.0.0).",
+        default=None,
+        help="IP de escuta (padrao 127.0.0.1; pode ser definido em SIM_HOST).",
     )
     parser.add_argument(
         "--port",
@@ -63,6 +63,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vision-fps", type=float, default=10.0)
     parser.add_argument("--vision-confidence", type=float, default=0.60)
     parser.add_argument("--vision-max-age-ms", type=float, default=300.0)
+    parser.add_argument("--vision-pick-max-attempts", type=int, default=2,
+                        help="Número máximo de tentativas para captura visual (padrão: 2).")
     parser.add_argument("--vision-enable-pick", action="store_true",
                         help="Habilitar captura; exige calibração e manifesto validados.")
     return parser
@@ -82,7 +84,8 @@ async def _run_async_server(args: argparse.Namespace) -> int:
                             cpu_threads=args.vision_threads,
                             confidence_threshold=args.vision_confidence,
                             max_age_ms=args.vision_max_age_ms,
-                            enable_pick=args.vision_enable_pick),
+                            enable_pick=args.vision_enable_pick,
+                            pick_max_attempts=args.vision_pick_max_attempts),
     )
     logger = configure_backend_logger("BackendMain", level=cfg.server.log_level)
     server = GripperWebSocketServer(config=cfg, logger=logger)

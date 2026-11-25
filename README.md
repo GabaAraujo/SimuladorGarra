@@ -103,6 +103,8 @@ Abra no navegador:
 - **Versão Single-File Estática**: [http://localhost:8000/standalone](http://localhost:8000/standalone)
 - **Healthcheck REST**: [http://localhost:8000/health](http://localhost:8000/health)
 
+O backend escuta apenas `127.0.0.1` por padrão. Para acesso de outra máquina, configure `SIM_HOST` e um `SIM_CORS_ORIGIN` específico para a interface confiável. `SIM_CORS_ORIGIN=*` permite origens de navegador de qualquer domínio; use essa opção somente em uma rede controlada. O servidor não autentica clientes, portanto não o exponha diretamente à internet.
+
 ### 3.2 Gerar o Frontend Single-File para Hospedagem Estática Independente
 
 ```bash
@@ -183,3 +185,58 @@ Verificações:
 .\.venv\Scripts\python.exe main.py --scenario vision
 .\.venv\Scripts\python.exe scripts/bundle_frontend.py
 ```
+
+## 7. Instruções em linguagem natural
+
+O painel de visão aceita frases de até 300 caracteres, como “me passe o instrumento dental”. O interpretador converte a frase somente em uma tarefa com uma das classes autorizadas (`dental_tool` ou `floss_holder`); pedidos ambíguos ou não reconhecidos geram uma pergunta e não iniciam movimento.
+
+O Gemini é opcional. No PowerShell, configure a chave apenas para a sessão atual e, se necessário, escolha o modelo e o limiar de confiança:
+
+```powershell
+$env:GEMINI_API_KEY = "SUA_CHAVE"
+$env:GEMINI_MODEL = "gemini-2.5-flash"
+$env:NL_CONFIDENCE_THRESHOLD = "0.65"
+```
+
+Não salve a chave no repositório nem em exemplos `.env`. Ela é enviada ao Gemini pelo header `x-goog-api-key`. Sem `GEMINI_API_KEY`, ou quando a chamada falha, a interpretação usa o fallback local por palavras-chave. As associações de sinônimos estão centralizadas em [`backend/nl_interpreter.py`](./backend/nl_interpreter.py) e marcadas `# REVISAR`, pois ainda dependem de confirmação das classes odontológicas.
+
+Inicie o backend com a visão e a captura habilitadas (os pesos e a calibração precisam estar validados para preensão):
+
+```powershell
+.\.venv\Scripts\python.exe main.py --vision --vision-enable-pick --vision-pick-max-attempts 2 --port 8000
+```
+
+Linux/macOS, usando a configuração padrão de tentativas:
+
+```bash
+python main.py --vision --vision-enable-pick
+```
+
+O mesmo endpoint pode ser usado sem a interface:
+
+```powershell
+curl.exe -i -X POST http://localhost:8000/api/instruction `
+  -H "Content-Type: application/json" `
+  -d '{"text":"Me passe o instrumento dental"}'
+```
+
+Um pedido que casa com mais de uma ferramenta retorna `accepted:false` e uma pergunta de esclarecimento; não move a garra:
+
+```powershell
+curl.exe -i -X POST http://localhost:8000/api/instruction `
+  -H "Content-Type: application/json" `
+  -d '{"text":"Pegue o instrumento dental e o fio dental"}'
+```
+
+Respostas aceitas iniciam o mesmo `vision_pick` dos botões do painel. O servidor retorna a tarefa, confiança, fonte (`gemini` ou `keyword`), status atual e erro opcional. `409` indica outra captura em andamento, `429` limita solicitações concorrentes ou muito próximas, `403` indica origem de navegador não permitida e `503` indica visão/captura desabilitada. O endpoint aceita no máximo 300 caracteres e 8 KiB de corpo; demais corpos HTTP são limitados a 1 MiB e mensagens WebSocket a 16 KiB. O WebSocket também aceita `{"type":"instruction","text":"..."}`; consulte [`PROTOCOL.md`](./PROTOCOL.md) para os schemas. Tentativas e resultados finais são acrescentados a `artifacts/nl_log.jsonl` com segredos comuns mascarados.
+
+Falhas de detecção, revalidação ou preensão podem repetir até `--vision-pick-max-attempts`; entre tentativas, o robô abre a garra, retorna à pose segura e faz uma nova detecção. O status informa `attempt`, `max_attempts`, `last_failure` e `recovered`. Cancelamento e erros de simulação não iniciam outra tentativa.
+
+Execute os testes offline e a avaliação de palavras-chave:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/ scenarios/ -q
+.\.venv\Scripts\python.exe scripts/evaluate_nl.py --mode keyword
+```
+
+O avaliador lê as 56 frases de `datasets/nl_commands.json`, separa 30 de desenvolvimento e 26 de teste, e grava métricas por split em `artifacts/nl_eval_<timestamp>.json`. Todas as linhas estão marcadas para revisão humana; os resultados atuais são exploratórios e não demonstram qualidade independente. Para avaliar o Gemini, defina `GEMINI_API_KEY` e use `--mode gemini`. Para incluir capturas simuladas de ponta a ponta, passe `--e2e N`, por exemplo `--mode keyword --e2e 2`; esse ensaio exige detector, pesos e calibração validados.

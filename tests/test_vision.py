@@ -63,10 +63,17 @@ def test_cropped_boxes_rejected(camera,box):
 
 
 @pytest.mark.parametrize("kwargs", [{"target_fps":float("nan")},{"max_age_ms":-1},
-    {"confidence_threshold":1.1},{"stable_frames":0},{"width":4000}])
+    {"confidence_threshold":1.1},{"stable_frames":0},{"width":4000},
+    {"pick_max_attempts":0}])
 def test_config_validation(kwargs):
     with pytest.raises(ValueError):
         VisionConfig(**kwargs)
+
+
+def test_pick_attempts_cli_flag():
+    from backend.main import build_arg_parser
+    args = build_arg_parser().parse_args(["--vision-pick-max-attempts", "3"])
+    assert args.vision_pick_max_attempts == 3
 
 
 def service_with_candidate():
@@ -339,6 +346,9 @@ def test_no_motion_until_detection_is_returned_and_validated(cancel):
         await asyncio.gather(pick.task,return_exceptions=True)
         assert events == []
         assert pick.status["stage"] == ("cancelled" if cancel else "failed")
+        if not cancel:
+            assert pick.status["attempt"] == 2 and pick.status["max_attempts"] == 2
+            assert pick.status["last_failure"]
     asyncio.run(check())
 
 
@@ -346,6 +356,7 @@ def test_no_motion_until_detection_is_returned_and_validated(cancel):
 def test_pick_state_machine_and_revalidation(revalidate):
     async def check():
         _,service = service_with_candidate()
+        service.config = replace(service.config,pick_max_attempts=1)
         target = [.25,-.22,.024]
         detection = service.resolve(0,1,"1:0")
         state = {"pos":[0,.4,.3],"aperture":.08,"is_grasping":False,"contact_force":0}
@@ -386,4 +397,127 @@ def test_pick_state_machine_and_revalidation(revalidate):
             assert commands.count("close") == 1 and commands.count("open") == 2
         else:
             assert pick.status["stage"] == "failed" and "close" not in commands and commands[-1] == "hold"
+            assert pick.status["max_attempts"] == 1 and pick.status["attempt"] == 1
+    asyncio.run(check())
+
+
+def recovery_pick_fixture(*, failed_closes=1, block_recovery_open=False, move_target_on_retry=False):
+    env_stub, service = service_with_candidate()
+    state = {"pos":[0,.4,.3],"aperture":.08,"is_grasping":False,"contact_force":0}
+    commands, detection_calls, frame_positions = [], [], {}
+    recovery_waiting = asyncio.Event()
+
+    class Env:
+        scene_revision = 0
+        from backend.config import BackendConfig
+        config = BackendConfig()
+        def get_state_snapshot(self): return deepcopy(state)
+        def hold_position(self): commands.append("hold")
+        def _clamp_cartesian_xyz(self,*point): return list(point)
+
+    class Controller:
+        close_count = 0
+        open_count = 0
+        def execute_payload(self,payload):
+            command = payload["command"]
+            commands.append(command)
+            if command == "move_to": state["pos"] = list(payload["target"].values())
+            if command == "open":
+                self.open_count += 1
+                aperture = .01 if block_recovery_open and self.open_count == 2 else .08
+                state.update(aperture=aperture,is_grasping=False,contact_force=0)
+            if command == "close":
+                self.close_count += 1
+                if self.close_count > failed_closes:
+                    state.update(aperture=.01,is_grasping=True,contact_force=10,
+                                 grasped_object="dental_tool")
+
+    async def detect(class_name):
+        detection_calls.append(class_name)
+        frame_id = len(detection_calls)
+        point = [.25,-.22,.024]
+        if move_target_on_retry and frame_id >= 3:
+            point = [.27,-.21,.024]
+        frame_positions[frame_id] = point
+        candidate = {"detection_id":f"{frame_id}:0","class_name":class_name,
+                     "grasp_candidate":{"valid":True,"position_world_m":point}}
+        packet = {"status":"ready","pick_enabled":True,"frame_id":frame_id,
+                  "scene_revision":0,"detections":[candidate]}
+        service._packet = deepcopy(packet)
+        service._captured = time.perf_counter()
+        service._frames[frame_id] = (0,b"jpeg",deepcopy(packet),service._captured)
+        return packet
+
+    service.detect = detect
+    pick = VisionPick(Env(),Controller(),service)
+    original_wait = pick._wait
+
+    async def fast_wait(predicate, timeout=8):
+        if pick.status.get("stage") == "closing" and pick.controller.close_count <= failed_closes:
+            raise ValueError("Timeout aguardando conclusão física da etapa.")
+        if block_recovery_open and pick.status.get("stage") == "recovering" and state["aperture"] <= .055:
+            recovery_waiting.set()
+            await asyncio.Event().wait()
+        return await original_wait(predicate,timeout)
+
+    pick._wait = fast_wait
+    pick.recovery_waiting = recovery_waiting
+    return pick, detection_calls, frame_positions
+
+
+def test_pick_recupera_falha_de_preensao_na_segunda_tentativa():
+    async def check():
+        pick, calls, frame_positions = recovery_pick_fixture(move_target_on_retry=True)
+        pick.start({"class_name":"dental_tool"})
+        await pick.task
+        assert pick.status["stage"] == "completed"
+        assert pick.status["attempt"] == 2 and pick.status["max_attempts"] == 2
+        assert pick.status["recovered"] is True
+        assert pick.status["last_failure"] == "Contato ou preensão não confirmados."
+        assert calls == ["dental_tool"] * 4
+        assert pick.status["target_world_m"] == frame_positions[3]
+    asyncio.run(check())
+
+
+def test_pick_esgota_tentativas_recuperaveis():
+    async def check():
+        pick, calls, _ = recovery_pick_fixture(failed_closes=2)
+        pick.start({"class_name":"dental_tool"})
+        await pick.task
+        assert pick.status["stage"] == "failed"
+        assert pick.status["attempt"] == 2 and pick.status["max_attempts"] == 2
+        assert pick.status["recovered"] is False
+        assert pick.status["last_failure"] == "Contato ou preensão não confirmados."
+        assert calls == ["dental_tool"] * 4
+    asyncio.run(check())
+
+
+def test_cancelamento_interrompe_espera_de_recuperacao():
+    async def check():
+        pick, calls, _ = recovery_pick_fixture(block_recovery_open=True)
+        pick.start({"class_name":"dental_tool"})
+        await asyncio.wait_for(pick.recovery_waiting.wait(),timeout=2)
+        pick.cancel()
+        await asyncio.gather(pick.task,return_exceptions=True)
+        assert pick.status["stage"] == "cancelled"
+        assert calls == ["dental_tool"] * 2
+    asyncio.run(check())
+
+
+def test_erro_de_simulacao_nao_gera_nova_tentativa():
+    async def check():
+        pick, calls, _ = recovery_pick_fixture()
+        execute = pick.controller.execute_payload
+        def fail_movement(payload):
+            if payload["command"] == "move_to":
+                raise RuntimeError("erro de simulação")
+            execute(payload)
+        pick.controller.execute_payload = fail_movement
+        pick.start({"class_name":"dental_tool"})
+        await pick.task
+        assert pick.status["stage"] == "failed"
+        assert pick.status["attempt"] == 1
+        assert pick.status["recovered"] is False
+        assert "erro de simulação" in pick.status["last_failure"]
+        assert calls == ["dental_tool"]
     asyncio.run(check())

@@ -57,10 +57,10 @@ class GripperConfig:
 class ServerConfig:
     """Parâmetros de rede HTTP/WebSocket para desenvolvimento e produção."""
 
-    host: str = field(default_factory=lambda: os.getenv("SIM_HOST", "0.0.0.0"))
+    host: str = field(default_factory=lambda: os.getenv("SIM_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(os.getenv("SIM_PORT", "8000")))
     ws_path: str = "/ws"
-    cors_origins: str = field(default_factory=lambda: os.getenv("SIM_CORS_ORIGIN", "*"))
+    cors_origins: str = field(default_factory=lambda: os.getenv("SIM_CORS_ORIGIN", "same-origin"))
     client_timeout_s: float = 30.0
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 
@@ -82,6 +82,7 @@ class VisionConfig:
     stable_frames: int = 3
     stability_m: float = 0.008
     enable_pick: bool = False
+    pick_max_attempts: int = 2
     allowed_classes: Tuple[str, ...] = ("dental_tool", "floss_holder")
 
     def __post_init__(self) -> None:
@@ -95,6 +96,10 @@ class VisionConfig:
                 raise ValueError(f"Configuração de visão inválida: {name}")
         if self.target_fps > 60 or self.confidence_threshold > 1 or self.stable_frames < 1 or not 1 <= self.cpu_threads <= 32:
             raise ValueError("FPS, confiança ou estabilidade de visão inválidos.")
+        if (isinstance(self.pick_max_attempts, bool)
+                or not isinstance(self.pick_max_attempts, int)
+                or self.pick_max_attempts < 1):
+            raise ValueError("pick_max_attempts deve ser pelo menos 1.")
 
 
 @dataclass(frozen=True)

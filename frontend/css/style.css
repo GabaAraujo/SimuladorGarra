@@ -604,3 +604,10 @@ input[type="range"] {
 .vision-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .vision-actions button { padding: 8px; cursor: pointer; color: var(--text-primary); background: var(--accent-blue); border: 1px solid var(--border-subtle); border-radius: 6px; }
 .vision-actions button:disabled { opacity: .5; cursor: default; }
+.vision-instruction-form { margin-top: 14px; }
+.vision-instruction-form label { display: block; margin-bottom: 6px; font-size: 12px; }
+.vision-instruction-row { display: flex; gap: 8px; }
+.vision-instruction-text { min-width: 0; flex: 1; padding: 8px; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 6px; }
+.vision-instruction-send { padding: 8px 12px; cursor: pointer; color: var(--text-primary); background: var(--accent-blue); border: 1px solid var(--border-subtle); border-radius: 6px; }
+.vision-instruction-send:disabled { opacity: .5; cursor: default; }
+.vision-instruction-result { min-height: 1.5em; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
